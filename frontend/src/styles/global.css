@@ -1,0 +1,390 @@
+:root {
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.wa-page {
+  min-height: 100vh;
+  background: #f6f8f7;
+  color: #17211f;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 32px 16px;
+}
+
+.wa-shell {
+  width: min(100%, 1024px);
+  margin: 0 auto;
+}
+
+.wa-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.wa-header h1,
+.wa-card h2 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.wa-header h1 {
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  line-height: 1;
+}
+
+.wa-card h2 {
+  font-size: 1.25rem;
+  line-height: 1.2;
+}
+
+.wa-eyebrow {
+  margin: 0 0 8px;
+  color: #66736f;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wa-lede {
+  max-width: 620px;
+  margin: 12px 0 0;
+  color: #4e5c58;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.wa-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.wa-auth-panel {
+  grid-column: 1 / -1;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.wa-card {
+  background: #ffffff;
+  border: 1px solid #d8e0dd;
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(23, 33, 31, 0.08);
+  padding: 22px;
+}
+
+.wa-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.wa-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  padding: 5px 10px;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.wa-status-pill.success {
+  color: #138a53;
+  background: #e9f8f1;
+}
+
+.wa-status-pill.warning {
+  color: #9a5d00;
+  background: #fff5df;
+}
+
+.wa-status-pill.danger {
+  color: #b42318;
+  background: #fff0ed;
+}
+
+.wa-qr-stage {
+  display: grid;
+  place-items: center;
+  min-height: 360px;
+  border: 1px dashed #b8c6c1;
+  border-radius: 12px;
+  background: #fbfcfb;
+}
+
+.wa-qr-code {
+  width: min(320px, 100%);
+  height: auto;
+  border-radius: 8px;
+}
+
+.wa-loading-block {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  color: #66736f;
+  min-height: 96px;
+}
+
+.wa-spinner-wrap {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+}
+
+.wa-spinner {
+  width: 22px;
+  height: 22px;
+  border: 3px solid #d8e0dd;
+  border-top-color: #1f6f5c;
+  border-radius: 999px;
+  animation: wa-spin 0.8s linear infinite;
+}
+
+.wa-state-message,
+.wa-timestamp {
+  color: #4e5c58;
+  line-height: 1.55;
+}
+
+.wa-timestamp {
+  margin-bottom: 0;
+  font-size: 0.9rem;
+}
+
+.wa-form {
+  display: grid;
+  gap: 16px;
+}
+
+.wa-field {
+  display: grid;
+  gap: 8px;
+}
+
+.wa-field label {
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.wa-field input,
+.wa-field textarea {
+  width: 100%;
+  border: 1px solid #c6d1cd;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #17211f;
+  padding: 12px 13px;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.wa-field textarea {
+  resize: none;
+  line-height: 1.5;
+}
+
+.wa-field input:focus,
+.wa-field textarea:focus,
+.wa-primary-button:focus-visible,
+.wa-secondary-button:focus-visible,
+.wa-notice button:focus-visible {
+  border-color: #2f80ed;
+  box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.2);
+}
+
+.wa-field input[aria-invalid="true"],
+.wa-field textarea[aria-invalid="true"] {
+  border-color: #b42318;
+}
+
+.wa-field input:disabled,
+.wa-field textarea:disabled {
+  background: #f1f4f3;
+  color: #66736f;
+}
+
+.wa-help,
+.wa-error {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.wa-help {
+  color: #66736f;
+}
+
+.wa-error {
+  color: #b42318;
+}
+
+.wa-field-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wa-primary-button,
+.wa-secondary-button {
+  min-height: 46px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-weight: 800;
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.wa-primary-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  background: #1f6f5c;
+  color: #ffffff;
+  padding: 0 18px;
+}
+
+.wa-secondary-button {
+  background: #ffffff;
+  border-color: #c6d1cd;
+  color: #1f6f5c;
+  padding: 0 14px;
+}
+
+.wa-primary-button:hover:not(:disabled),
+.wa-secondary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(23, 33, 31, 0.12);
+}
+
+.wa-primary-button:disabled,
+.wa-secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
+.wa-hidden-label {
+  visibility: hidden;
+}
+
+.wa-primary-button .wa-spinner-wrap {
+  position: absolute;
+}
+
+.wa-primary-button .wa-spinner {
+  border-color: rgba(255, 255, 255, 0.4);
+  border-top-color: #ffffff;
+}
+
+.wa-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  border-radius: 8px;
+  border: 1px solid;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-weight: 700;
+}
+
+.wa-notice.success {
+  color: #0f6840;
+  background: #e9f8f1;
+  border-color: #b7e3cc;
+}
+
+.wa-notice.error {
+  color: #b42318;
+  background: #fff0ed;
+  border-color: #ffd0c8;
+}
+
+.wa-notice button {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+@keyframes wa-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wa-spinner {
+    animation-duration: 1.4s;
+  }
+
+  .wa-primary-button,
+  .wa-secondary-button,
+  .wa-field input,
+  .wa-field textarea {
+    transition: none;
+  }
+}
+
+@media (max-width: 780px) {
+  .wa-page {
+    padding: 22px 12px;
+  }
+
+  .wa-header,
+  .wa-card-heading {
+    display: grid;
+  }
+
+  .wa-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wa-card {
+    padding: 18px;
+  }
+
+  .wa-qr-stage {
+    min-height: 300px;
+  }
+}
