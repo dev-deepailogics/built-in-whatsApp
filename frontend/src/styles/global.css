@@ -18,6 +18,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -158,6 +159,12 @@ textarea {
   min-height: 96px;
 }
 
+.wa-auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .wa-spinner-wrap {
   position: relative;
   display: inline-grid;
@@ -202,6 +209,7 @@ textarea {
 }
 
 .wa-field input,
+.wa-field select,
 .wa-field textarea {
   width: 100%;
   border: 1px solid #c6d1cd;
@@ -219,9 +227,11 @@ textarea {
 }
 
 .wa-field input:focus,
+.wa-field select:focus,
 .wa-field textarea:focus,
 .wa-primary-button:focus-visible,
 .wa-secondary-button:focus-visible,
+.wa-template-clear:focus-visible,
 .wa-notice button:focus-visible {
   border-color: #2f80ed;
   box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.2);
@@ -233,9 +243,36 @@ textarea {
 }
 
 .wa-field input:disabled,
+.wa-field select:disabled,
 .wa-field textarea:disabled {
   background: #f1f4f3;
   color: #66736f;
+}
+
+.wa-template-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.wa-template-clear {
+  min-height: 46px;
+  border: 1px solid #c6d1cd;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f6f5c;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 0 14px;
+}
+
+.wa-template-clear:hover:not(:disabled) {
+  background: #f6f8f7;
+}
+
+.wa-template-clear:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .wa-help,
@@ -377,6 +414,10 @@ textarea {
   }
 
   .wa-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wa-template-row {
     grid-template-columns: 1fr;
   }
 

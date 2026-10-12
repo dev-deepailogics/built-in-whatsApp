@@ -4,7 +4,7 @@ import Spinner from "../../../shared/ui/Spinner.jsx";
 import StatusPill from "../../../shared/ui/StatusPill.jsx";
 import { WHATSAPP_STATUS } from "../constants.js";
 
-export default function AuthPanel({ state, connectionIssue, onRetry }) {
+export default function AuthPanel({ state, connectionIssue, onRetry, onClearSession }) {
   const showQr = state.status === WHATSAPP_STATUS.QR && state.qr;
 
   return (
@@ -29,9 +29,14 @@ export default function AuthPanel({ state, connectionIssue, onRetry }) {
       </div>
 
       <p className="wa-state-message">{connectionIssue || state.message}</p>
-      <Button type="button" variant="secondary" onClick={onRetry}>
-        Recheck connection
-      </Button>
+      <div className="wa-auth-actions">
+        <Button type="button" variant="secondary" onClick={onRetry}>
+          Reconnect
+        </Button>
+        <Button type="button" variant="secondary" onClick={onClearSession}>
+          New QR
+        </Button>
+      </div>
     </Card>
   );
 }

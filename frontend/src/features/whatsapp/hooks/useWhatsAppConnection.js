@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createWhatsAppEventSource, getWhatsAppStatus } from "../api/whatsappApi.js";
+import { createWhatsAppEventSource, getWhatsAppStatus, logoutWhatsApp, reconnectWhatsApp } from "../api/whatsappApi.js";
 import { INITIAL_WHATSAPP_STATE } from "../constants.js";
 
 export default function useWhatsAppConnection() {
@@ -15,6 +15,34 @@ export default function useWhatsAppConnection() {
       setConnectionIssue("");
     } catch (error) {
       setConnectionIssue(error.message || "Backend is unavailable.");
+    }
+  }, []);
+
+  const reconnect = useCallback(async () => {
+    try {
+      const response = await reconnectWhatsApp();
+
+      if (response.state) {
+        setWhatsAppState(response.state);
+      }
+
+      setConnectionIssue("");
+    } catch (error) {
+      setConnectionIssue(error.message || "Could not reconnect WhatsApp.");
+    }
+  }, []);
+
+  const clearSession = useCallback(async () => {
+    try {
+      const response = await logoutWhatsApp();
+
+      if (response.state) {
+        setWhatsAppState(response.state);
+      }
+
+      setConnectionIssue("");
+    } catch (error) {
+      setConnectionIssue(error.message || "Could not clear WhatsApp session.");
     }
   }, []);
 
@@ -45,6 +73,8 @@ export default function useWhatsAppConnection() {
   return {
     whatsAppState,
     connectionIssue,
-    refreshStatus
+    refreshStatus,
+    reconnect,
+    clearSession
   };
 }

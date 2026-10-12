@@ -14,6 +14,18 @@ export function sendWhatsAppMessage({ phone, message }) {
   });
 }
 
+export function reconnectWhatsApp() {
+  return apiRequest("/api/reconnect", {
+    method: "POST"
+  });
+}
+
+export function logoutWhatsApp() {
+  return apiRequest("/api/logout", {
+    method: "POST"
+  });
+}
+
 export function createWhatsAppEventSource() {
   return new EventSource(`${API_BASE_URL}/api/whatsapp-events`);
 }

@@ -46,25 +46,33 @@ app.use(
 );
 app.use(express.json({ limit: "1mb" }));
 
-const client = new Client({
-  authStrategy: new LocalAuth({
-    clientId: process.env.WHATSAPP_CLIENT_ID || "personal-account",
-    dataPath: process.env.WHATSAPP_SESSION_PATH || ".wwebjs_auth"
-  }),
-  puppeteer: {
-    headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--no-first-run",
-      "--no-zygote",
-      "--disable-gpu"
-    ]
-  }
-});
+let client = null;
+let isClientInitializing = false;
+
+function createWhatsAppClient() {
+  const nextClient = new Client({
+    authStrategy: new LocalAuth({
+      clientId: process.env.WHATSAPP_CLIENT_ID || "personal-account",
+      dataPath: process.env.WHATSAPP_SESSION_PATH || ".wwebjs_auth"
+    }),
+    puppeteer: {
+      headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-accelerated-2d-canvas",
+        "--no-first-run",
+        "--no-zygote",
+        "--disable-gpu"
+      ]
+    }
+  });
+
+  attachWhatsAppListeners(nextClient);
+  return nextClient;
+}
 
 function updateWhatsAppState(nextState) {
   Object.assign(whatsappState, nextState, {
@@ -100,59 +108,102 @@ function formatPhoneForWhatsApp(phone) {
   return `${normalized}@c.us`;
 }
 
-client.on("qr", async (qr) => {
-  try {
-    const qrDataUrl = await qrcode.toDataURL(qr, {
-      margin: 2,
-      width: 320,
-      errorCorrectionLevel: "M"
-    });
+function getMessageId(messageResult) {
+  return messageResult?.id?._serialized || messageResult?._data?.id?._serialized || null;
+}
 
+function attachWhatsAppListeners(whatsAppClient) {
+  whatsAppClient.on("qr", async (qr) => {
+    try {
+      const qrDataUrl = await qrcode.toDataURL(qr, {
+        margin: 2,
+        width: 320,
+        errorCorrectionLevel: "M"
+      });
+
+      updateWhatsAppState({
+        status: "qr",
+        qr: qrDataUrl,
+        message: "Scan the QR code with WhatsApp to connect."
+      });
+    } catch (error) {
+      updateWhatsAppState({
+        status: "error",
+        qr: null,
+        message: "Failed to generate QR code."
+      });
+    }
+  });
+
+  whatsAppClient.on("authenticated", () => {
     updateWhatsAppState({
-      status: "qr",
-      qr: qrDataUrl,
-      message: "Scan the QR code with WhatsApp to connect."
+      status: "authenticated",
+      qr: null,
+      message: "WhatsApp authenticated. Preparing session..."
     });
+  });
+
+  whatsAppClient.on("ready", () => {
+    updateWhatsAppState({
+      status: "connected",
+      qr: null,
+      message: "Connected to WhatsApp."
+    });
+  });
+
+  whatsAppClient.on("auth_failure", (message) => {
+    updateWhatsAppState({
+      status: "auth_failure",
+      qr: null,
+      message: message || "Authentication failed. Please scan a new QR code."
+    });
+  });
+
+  whatsAppClient.on("disconnected", (reason) => {
+    updateWhatsAppState({
+      status: "disconnected",
+      qr: null,
+      message: reason || "WhatsApp disconnected. Use reconnect or clear session to generate a new QR."
+    });
+  });
+}
+
+async function initializeWhatsAppClient({ resetSession = false } = {}) {
+  if (isClientInitializing) {
+    return whatsappState;
+  }
+
+  isClientInitializing = true;
+
+  updateWhatsAppState({
+    status: "starting",
+    qr: null,
+    message: resetSession ? "Clearing WhatsApp session and generating a new QR..." : "Starting WhatsApp client..."
+  });
+
+  try {
+    if (client) {
+      if (resetSession) {
+        await client.logout().catch(() => null);
+      }
+
+      await client.destroy().catch(() => null);
+    }
+
+    client = createWhatsAppClient();
+    await client.initialize();
   } catch (error) {
     updateWhatsAppState({
       status: "error",
       qr: null,
-      message: "Failed to generate QR code."
+      message: error.message || "Failed to initialize WhatsApp client."
     });
+  } finally {
+    isClientInitializing = false;
   }
-});
 
-client.on("authenticated", () => {
-  updateWhatsAppState({
-    status: "authenticated",
-    qr: null,
-    message: "WhatsApp authenticated. Preparing session..."
-  });
-});
-
-client.on("ready", () => {
-  updateWhatsAppState({
-    status: "connected",
-    qr: null,
-    message: "Connected to WhatsApp."
-  });
-});
-
-client.on("auth_failure", (message) => {
-  updateWhatsAppState({
-    status: "auth_failure",
-    qr: null,
-    message: message || "Authentication failed. Please scan a new QR code."
-  });
-});
-
-client.on("disconnected", (reason) => {
-  updateWhatsAppState({
-    status: "disconnected",
-    qr: null,
-    message: reason || "WhatsApp disconnected. Restart the server or reconnect."
-  });
-});
+  return whatsappState;
+}
 
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -165,6 +216,30 @@ app.get("/health", (req, res) => {
 app.get("/api/status", (req, res) => {
   res.status(200).json(whatsappState);
 });
+
+app.post(
+  "/api/reconnect",
+  asyncHandler(async (req, res) => {
+    const state = await initializeWhatsAppClient();
+
+    res.status(202).json({
+      success: true,
+      state
+    });
+  })
+);
+
+app.post(
+  "/api/logout",
+  asyncHandler(async (req, res) => {
+    const state = await initializeWhatsAppClient({ resetSession: true });
+
+    res.status(202).json({
+      success: true,
+      state
+    });
+  })
+);
 
 app.get("/api/whatsapp-events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
@@ -212,13 +287,29 @@ app.post(
       });
     }
 
+    if (!client) {
+      return res.status(503).json({
+        success: false,
+        error: "WhatsApp client is not initialized. Reconnect and scan the QR code."
+      });
+    }
+
     const chatId = formatPhoneForWhatsApp(phone);
+    const registeredNumber = await client.getNumberId(chatId).catch(() => null);
+
+    if (!registeredNumber?._serialized) {
+      return res.status(400).json({
+        success: false,
+        error: "This phone number is not registered on WhatsApp or cannot be reached."
+      });
+    }
+
     const result = await client.sendMessage(chatId, text);
 
     res.status(200).json({
       success: true,
-      messageId: result.id?._serialized || null,
-      to: chatId
+      messageId: getMessageId(result),
+      to: registeredNumber._serialized
     });
   })
 );
@@ -246,15 +337,7 @@ async function startServer() {
     console.log(`API server listening on port ${PORT}`);
   });
 
-  try {
-    await client.initialize();
-  } catch (error) {
-    updateWhatsAppState({
-      status: "error",
-      qr: null,
-      message: error.message || "Failed to initialize WhatsApp client."
-    });
-  }
+  await initializeWhatsAppClient();
 }
 
 async function shutdown(signal) {
@@ -265,7 +348,9 @@ async function shutdown(signal) {
   }
 
   try {
-    await client.destroy();
+    if (client) {
+      await client.destroy();
+    }
   } catch (error) {
     console.error("Failed to destroy WhatsApp client:", error.message);
   } finally {

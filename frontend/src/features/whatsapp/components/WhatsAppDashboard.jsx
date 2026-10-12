@@ -8,7 +8,7 @@ import ConnectionCard from "./ConnectionCard.jsx";
 import MessageForm from "./MessageForm.jsx";
 
 export default function WhatsAppDashboard() {
-  const { whatsAppState, connectionIssue, refreshStatus } = useWhatsAppConnection();
+  const { whatsAppState, connectionIssue, reconnect, clearSession } = useWhatsAppConnection();
   const [notice, setNotice] = useState(null);
 
   const isConnected = whatsAppState.status === WHATSAPP_STATUS.CONNECTED;
@@ -29,7 +29,12 @@ export default function WhatsAppDashboard() {
 
         <div className="wa-grid">
           {!isConnected ? (
-            <AuthPanel state={whatsAppState} connectionIssue={connectionIssue} onRetry={refreshStatus} />
+            <AuthPanel
+              state={whatsAppState}
+              connectionIssue={connectionIssue}
+              onRetry={reconnect}
+              onClearSession={clearSession}
+            />
           ) : (
             <>
               <ConnectionCard state={whatsAppState} />

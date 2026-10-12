@@ -4,15 +4,35 @@ import Card from "../../../shared/ui/Card.jsx";
 import { MAX_MESSAGE_LENGTH } from "../constants.js";
 import { sendWhatsAppMessage } from "../api/whatsappApi.js";
 import { validateMessageForm } from "../lib/validation.js";
+import { MESSAGE_TEMPLATES, findMessageTemplate } from "../messageTemplates.js";
 
 export default function MessageForm({ onNotice }) {
   const [phone, setPhone] = useState("");
   const [message, setMessage] = useState("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [errors, setErrors] = useState({});
   const [isSending, setIsSending] = useState(false);
   const firstErrorRef = useRef(null);
 
   const remaining = useMemo(() => MAX_MESSAGE_LENGTH - message.length, [message]);
+
+  function handleTemplateChange(event) {
+    const templateId = event.target.value;
+    const template = findMessageTemplate(templateId);
+
+    setSelectedTemplateId(templateId);
+
+    if (template) {
+      setMessage(template.body);
+      setErrors((currentErrors) => ({ ...currentErrors, message: undefined }));
+    }
+  }
+
+  function clearTemplate() {
+    setSelectedTemplateId("");
+    setMessage("");
+    setErrors((currentErrors) => ({ ...currentErrors, message: undefined }));
+  }
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -53,6 +73,32 @@ export default function MessageForm({ onNotice }) {
 
       <form className="wa-form" onSubmit={handleSubmit} noValidate>
         <div className="wa-field">
+          <label htmlFor="message-template">Built-in message template</label>
+          <div className="wa-template-row">
+            <select
+              id="message-template"
+              name="messageTemplate"
+              value={selectedTemplateId}
+              onChange={handleTemplateChange}
+              disabled={isSending}
+            >
+              <option value="">Write a custom message</option>
+              {MESSAGE_TEMPLATES.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="wa-template-clear" onClick={clearTemplate} disabled={isSending || !message}>
+              Clear
+            </button>
+          </div>
+          <p className="wa-help">
+            Choose a fixed Tameer.ai message, then edit it if needed before sending.
+          </p>
+        </div>
+
+        <div className="wa-field">
           <label htmlFor="phone">Phone number</label>
           <input
             ref={errors.phone ? firstErrorRef : null}
@@ -88,7 +134,10 @@ export default function MessageForm({ onNotice }) {
             rows="7"
             placeholder="Type your message..."
             value={message}
-            onChange={(event) => setMessage(event.target.value)}
+            onChange={(event) => {
+              setMessage(event.target.value);
+              setSelectedTemplateId("");
+            }}
             aria-invalid={Boolean(errors.message)}
             aria-describedby="message-meta"
             disabled={isSending}
