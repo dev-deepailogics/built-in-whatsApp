@@ -1465,3 +1465,15 @@ textarea {
   padding: 12px;
   text-align: center;
 }
+
+.wa-sync-history {
+  border-color: transparent;
+  background: #fff4d6;
+  color: #6b5200;
+  font-size: 0.82rem;
+}
+
+.wa-loading-older {
+  margin: 0;
+  text-align: center;
+}

@@ -7,7 +7,8 @@ import {
   getChatPhotoUrl,
   getMessageMedia,
   getRecentChats,
-  sendWhatsAppMessage
+  sendWhatsAppMessage,
+  syncChatHistory
 } from "../api/whatsappApi.js";
 
 const INITIAL_MESSAGE_LIMIT = 20;
@@ -367,6 +368,7 @@ export default function RecentChats({ sessionId, onNotice }) {
   const [isMessagesLoading, setIsMessagesLoading] = useState(false);
   const [error, setError] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isSyncingHistory, setIsSyncingHistory] = useState(false);
   const [chatLimit, setChatLimit] = useState(CHAT_PAGE_SIZE);
   const [hasMoreChats, setHasMoreChats] = useState(true);
   const [contactModal, setContactModal] = useState(null);
@@ -477,6 +479,34 @@ export default function RecentChats({ sessionId, onNotice }) {
       return false;
     } finally {
       setIsSending(false);
+    }
+  }
+
+  async function handleSyncHistory() {
+    if (!selectedChat || selectedChat.isPending || isSyncingHistory) return;
+
+    setIsSyncingHistory(true);
+
+    try {
+      const result = await syncChatHistory({ sessionId, chatId: selectedChat.id });
+
+      if (!result.requested) {
+        onNotice?.({ type: "success", message: "No older messages are available from your phone for this chat." });
+      } else if (result.added === 0) {
+        onNotice?.({
+          type: "error",
+          message: "Your phone did not send older messages. Make sure it is online and try again."
+        });
+      } else {
+        const nextLimit = messageLimit + Math.max(result.added, MESSAGE_PAGE_SIZE);
+        setMessageLimit(nextLimit);
+        await loadMessages(selectedChat, nextLimit);
+        onNotice?.({ type: "success", message: `Loaded ${result.added} older messages from your phone.` });
+      }
+    } catch (syncError) {
+      onNotice?.({ type: "error", message: syncError.message || "Could not request older messages." });
+    } finally {
+      setIsSyncingHistory(false);
     }
   }
 
@@ -635,8 +665,17 @@ export default function RecentChats({ sessionId, onNotice }) {
         <div className="wa-thread-scroll" ref={threadRef} onScroll={handleThreadScroll}>
           {selectedChat ? (
             <>
-              <button className="wa-load-older" type="button" onClick={loadOlderMessages} disabled={isMessagesLoading}>
-                {isMessagesLoading ? "Loading..." : "Load 20 older messages"}
+              {isMessagesLoading && messages.length > 0 ? (
+                <p className="wa-help wa-loading-older">Loading older messages...</p>
+              ) : null}
+
+              <button
+                className="wa-load-older wa-sync-history"
+                type="button"
+                onClick={handleSyncHistory}
+                disabled={isSyncingHistory || Boolean(selectedChat.isPending)}
+              >
+                {isSyncingHistory ? "Asking your phone..." : "Click here to get older messages from your phone"}
               </button>
 
               <div className="wa-thread-date">{formatFullTime(orderedMessages[0]?.timestamp) || "Recent messages"}</div>

@@ -855,6 +855,69 @@ app.post(
   })
 );
 
+app.post(
+  "/api/chats/sync-history",
+  asyncHandler(async (req, res) => {
+    const session = getOrCreateSession(getSessionId(req));
+    const chatId = String(req.body?.chatId || "").trim();
+
+    if (session.state.status !== "connected" || !session.client) {
+      return res.status(409).json({
+        success: false,
+        error: "This user's WhatsApp is not connected. Scan the QR code before syncing history."
+      });
+    }
+
+    if (!/^[\w.-]+@(c\.us|g\.us|lid)$/.test(chatId)) {
+      return res.status(400).json({ success: false, error: "chatId is not a valid WhatsApp chat id." });
+    }
+
+    // WhatsApp temporarily disables on-demand sync after repeated failures, so avoid hammering it.
+    const attemptKey = `${session.sessionId}:${chatId}`;
+    const lastAttemptAt = historySyncAttempts.get(attemptKey) || 0;
+    const waitMs = HISTORY_SYNC_COOLDOWN_MS - (Date.now() - lastAttemptAt);
+
+    if (waitMs > 0) {
+      return res.status(429).json({
+        success: false,
+        error: `Please wait ${Math.ceil(waitMs / 1000)}s before requesting older messages again.`
+      });
+    }
+
+    historySyncAttempts.set(attemptKey, Date.now());
+
+    const before = await countLocalChatMessages(session.client, chatId);
+    const requested = await session.client.syncHistory(chatId);
+
+    if (!requested) {
+      // WhatsApp reports no more history on the phone for this chat (or the chat is unknown).
+      return res.status(200).json({ success: true, requested: false, added: 0, total: before });
+    }
+
+    // The phone answers asynchronously; wait until the local count grows and then stops changing.
+    const deadline = Date.now() + HISTORY_SYNC_MAX_WAIT_MS;
+    let latest = before;
+    let stableTicks = 0;
+
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, HISTORY_SYNC_POLL_INTERVAL_MS));
+
+      const current = await countLocalChatMessages(session.client, chatId);
+      stableTicks = current === latest ? stableTicks + 1 : 0;
+      latest = current;
+
+      if (latest > before && stableTicks >= 2) break;
+    }
+
+    res.status(200).json({
+      success: true,
+      requested: true,
+      added: Math.max(latest - before, 0),
+      total: latest
+    });
+  })
+);
+
 const PROFILE_PHOTO_TTL_MS = 60 * 60 * 1000;
 const profilePhotoCache = new Map();
 
@@ -920,6 +983,25 @@ app.get(
     res.send(entry.image.buffer);
   })
 );
+
+const HISTORY_SYNC_COOLDOWN_MS = 15 * 1000;
+const HISTORY_SYNC_POLL_INTERVAL_MS = 1500;
+const HISTORY_SYNC_MAX_WAIT_MS = 25 * 1000;
+const historySyncAttempts = new Map();
+
+async function countLocalChatMessages(client, chatId) {
+  return client.pupPage.evaluate((requestedChatId) => {
+    const chat = window
+      .require("WAWebCollections")
+      .Chat.getModelsArray()
+      .find((candidate) => {
+        const id = candidate.id?._serialized || candidate.id?.toString?.();
+        return id === requestedChatId;
+      });
+
+    return (chat?.msgs?.getModelsArray?.() || []).filter((message) => !message.isNotification).length;
+  }, chatId);
+}
 
 app.get(
   "/api/messages/media",

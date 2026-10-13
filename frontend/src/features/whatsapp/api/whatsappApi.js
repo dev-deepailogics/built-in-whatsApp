@@ -58,6 +58,14 @@ export function getChatPhotoUrl({ sessionId, chatId }) {
   return `${API_BASE_URL}/api/chats/photo?${params.toString()}`;
 }
 
+export function syncChatHistory({ sessionId, chatId }) {
+  return apiRequest(`/api/chats/sync-history?sessionId=${encodeURIComponent(sessionId)}`, {
+    method: "POST",
+    body: JSON.stringify({ sessionId, chatId }),
+    timeoutMs: 60000
+  });
+}
+
 export function getMessageMedia({ sessionId, messageId }) {
   const params = new URLSearchParams({
     sessionId,
