@@ -1,7 +1,7 @@
 import Card from "../../../shared/ui/Card.jsx";
 import StatusPill from "../../../shared/ui/StatusPill.jsx";
 
-export default function ConnectionCard({ state }) {
+export default function ConnectionCard({ state, sessionId }) {
   return (
     <Card className="wa-connection-card" labelledBy="connection-title">
       <div className="wa-card-heading">
@@ -12,6 +12,7 @@ export default function ConnectionCard({ state }) {
         <StatusPill status="connected" />
       </div>
       <p className="wa-state-message">{state.message}</p>
+      <p className="wa-session-label">Session: {sessionId}</p>
       <p className="wa-timestamp">
         Last update: {state.lastUpdated ? new Date(state.lastUpdated).toLocaleString() : "Now"}
       </p>

@@ -6,7 +6,7 @@ import { sendWhatsAppMessage } from "../api/whatsappApi.js";
 import { validateMessageForm } from "../lib/validation.js";
 import { MESSAGE_TEMPLATES, findMessageTemplate } from "../messageTemplates.js";
 
-export default function MessageForm({ onNotice }) {
+export default function MessageForm({ sessionId, onNotice }) {
   const [phone, setPhone] = useState("");
   const [message, setMessage] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
@@ -49,7 +49,7 @@ export default function MessageForm({ onNotice }) {
     onNotice(null);
 
     try {
-      await sendWhatsAppMessage({ phone, message });
+      await sendWhatsAppMessage({ sessionId, phone, message });
       setMessage("");
       onNotice({ type: "success", message: "Message sent successfully." });
     } catch (error) {
