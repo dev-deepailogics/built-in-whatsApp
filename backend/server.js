@@ -352,6 +352,16 @@ async function getRecentChatsFromBrowser(client, { chatLimit, messageLimit }) {
             phoneTitle: title,
             isBusiness,
             businessName,
+            phone: (() => {
+              const phoneId = getSerializedId(contact.phoneNumber) || (id.endsWith("@c.us") ? id : "");
+              const idDigits = phoneId.split("@")[0];
+
+              if (/^\d{8,15}$/.test(idDigits) && /@c\.us$/.test(phoneId)) return `+${idDigits}`;
+
+              // Unsaved contacts are titled with their formatted number, e.g. "+92 321 4444537".
+              const titleDigits = String(title).replace(/[\s()-]/g, "");
+              return /^\+\d{8,15}$/.test(titleDigits) ? titleDigits : null;
+            })(),
             isGroup: Boolean(raw.isGroup || chat.groupMetadata),
             unreadCount: raw.unreadCount || chat.unreadCount || 0,
             timestamp: raw.t || chat.t || messages.at(-1)?.timestamp || null,
@@ -602,23 +612,39 @@ app.post(
       });
     }
 
-    const chatId = formatPhoneForWhatsApp(phone);
-    const registeredNumber = await session.client.getNumberId(chatId).catch(() => null);
+    const existingChatId = String(req.body?.chatId || "").trim();
+    let recipientId = null;
 
-    if (!registeredNumber?._serialized) {
-      return res.status(400).json({
-        success: false,
-        error: "This phone number is not registered on WhatsApp or cannot be reached."
-      });
+    if (existingChatId) {
+      if (!/^[\w.-]+@(c\.us|g\.us|lid)$/.test(existingChatId)) {
+        return res.status(400).json({
+          success: false,
+          error: "chatId is not a valid WhatsApp chat id."
+        });
+      }
+
+      recipientId = existingChatId;
+    } else {
+      const formattedId = formatPhoneForWhatsApp(phone);
+      const registeredNumber = await session.client.getNumberId(formattedId).catch(() => null);
+
+      if (!registeredNumber?._serialized) {
+        return res.status(400).json({
+          success: false,
+          error: "This phone number is not registered on WhatsApp or cannot be reached."
+        });
+      }
+
+      recipientId = registeredNumber._serialized;
     }
 
-    const result = await session.client.sendMessage(registeredNumber._serialized, text);
+    const result = await session.client.sendMessage(recipientId, text);
 
     res.status(200).json({
       success: true,
       sessionId: session.sessionId,
       messageId: getMessageId(result),
-      to: registeredNumber._serialized
+      to: recipientId
     });
   })
 );
@@ -635,7 +661,7 @@ app.get(
       });
     }
 
-    const chatLimit = getBoundedNumber(req.query.chatLimit, 10, { min: 1, max: 50 });
+    const chatLimit = getBoundedNumber(req.query.chatLimit, 10, { min: 1, max: 500 });
     const messageLimit = getBoundedNumber(req.query.messageLimit, 5, { min: 1, max: 25 });
     let serializedChats = [];
 
@@ -773,6 +799,61 @@ async function downloadMessageMedia(client, messageId) {
     return { media: null, failure: { step: "evaluate", message: error.message } };
   }
 }
+
+app.post(
+  "/api/contacts",
+  asyncHandler(async (req, res) => {
+    const session = getOrCreateSession(getSessionId(req));
+
+    if (session.state.status !== "connected" || !session.client) {
+      return res.status(409).json({
+        success: false,
+        error: "This user's WhatsApp is not connected. Scan the QR code before adding contacts."
+      });
+    }
+
+    const { firstName, lastName, phone, syncToPhone } = req.body || {};
+    const digits = String(phone || "").replace(/\D/g, "");
+    const first = String(firstName || "").trim();
+
+    if (!first) {
+      return res.status(400).json({ success: false, error: "Contact name is required." });
+    }
+
+    if (digits.length < 8 || digits.length > 15) {
+      return res.status(400).json({
+        success: false,
+        error: "Enter the phone number with country code, using 8-15 digits."
+      });
+    }
+
+    const registered = await session.client.getNumberId(digits).catch(() => null);
+
+    if (!registered?._serialized) {
+      return res.status(400).json({
+        success: false,
+        error: "This phone number is not registered on WhatsApp."
+      });
+    }
+
+    await session.client.saveOrEditAddressbookContact(
+      digits,
+      first,
+      String(lastName || "").trim(),
+      Boolean(syncToPhone)
+    );
+
+    res.status(201).json({
+      success: true,
+      contact: {
+        id: registered._serialized,
+        name: [first, String(lastName || "").trim()].filter(Boolean).join(" "),
+        phone: `+${digits}`,
+        syncedToPhone: Boolean(syncToPhone)
+      }
+    });
+  })
+);
 
 const PROFILE_PHOTO_TTL_MS = 60 * 60 * 1000;
 const profilePhotoCache = new Map();

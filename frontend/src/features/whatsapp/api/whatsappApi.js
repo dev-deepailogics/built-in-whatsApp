@@ -11,10 +11,18 @@ export function getWhatsAppStatus(sessionId) {
   });
 }
 
-export function sendWhatsAppMessage({ sessionId, phone, message }) {
+export function sendWhatsAppMessage({ sessionId, phone, chatId, message }) {
   return apiRequest("/api/send-message", {
     method: "POST",
-    body: JSON.stringify({ sessionId, phone, message })
+    body: JSON.stringify({ sessionId, phone, chatId, message })
+  });
+}
+
+export function addWhatsAppContact({ sessionId, firstName, lastName, phone, syncToPhone }) {
+  return apiRequest("/api/contacts", {
+    method: "POST",
+    body: JSON.stringify({ sessionId, firstName, lastName, phone, syncToPhone }),
+    timeoutMs: 30000
   });
 }
 

@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "../../../shared/ui/Button.jsx";
-import { getChatMessages, getChatPhotoUrl, getMessageMedia, getRecentChats } from "../api/whatsappApi.js";
+import AddContactModal from "./AddContactModal.jsx";
+import MessageComposer from "./MessageComposer.jsx";
+import {
+  getChatMessages,
+  getChatPhotoUrl,
+  getMessageMedia,
+  getRecentChats,
+  sendWhatsAppMessage
+} from "../api/whatsappApi.js";
 
 const INITIAL_MESSAGE_LIMIT = 20;
 const MESSAGE_PAGE_SIZE = 20;
+const CHAT_PAGE_SIZE = 30;
 
 function formatChatTime(timestamp) {
   if (!timestamp) return "";
@@ -349,7 +358,7 @@ function MessageBubble({ sessionId, message, isGroup = false, showSender = false
   );
 }
 
-export default function RecentChats({ sessionId }) {
+export default function RecentChats({ sessionId, onNotice }) {
   const [chats, setChats] = useState([]);
   const [selectedChat, setSelectedChat] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -357,6 +366,10 @@ export default function RecentChats({ sessionId }) {
   const [isChatsLoading, setIsChatsLoading] = useState(false);
   const [isMessagesLoading, setIsMessagesLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [chatLimit, setChatLimit] = useState(CHAT_PAGE_SIZE);
+  const [hasMoreChats, setHasMoreChats] = useState(true);
+  const [contactModal, setContactModal] = useState(null);
   const threadRef = useRef(null);
   const isLoadingOlderRef = useRef(false);
 
@@ -366,14 +379,22 @@ export default function RecentChats({ sessionId }) {
     [messages]
   );
 
-  async function loadChats({ keepSelection = true } = {}) {
+  async function loadChats({ keepSelection = true, limit = chatLimit } = {}) {
     setIsChatsLoading(true);
     setError("");
 
     try {
-      const response = await getRecentChats({ sessionId, chatLimit: 30, messageLimit: 1 });
+      const response = await getRecentChats({ sessionId, chatLimit: limit, messageLimit: 1 });
       const nextChats = response.chats || [];
-      setChats(nextChats);
+
+      // Keep placeholder chats (just-added contacts with no history yet) at the top until WhatsApp lists them.
+      setChats((current) => {
+        const pending = current.filter(
+          (chat) => chat.isPending && !nextChats.some((nextChat) => nextChat.id === chat.id)
+        );
+        return [...pending, ...nextChats];
+      });
+      setHasMoreChats(nextChats.length >= limit);
 
       if (!keepSelection || !selectedChat) {
         setSelectedChat(nextChats[0] || null);
@@ -386,8 +407,24 @@ export default function RecentChats({ sessionId }) {
     }
   }
 
+  function loadMoreChats() {
+    if (isChatsLoading || !hasMoreChats) return;
+
+    const nextLimit = chatLimit + CHAT_PAGE_SIZE;
+    setChatLimit(nextLimit);
+    loadChats({ limit: nextLimit });
+  }
+
+  function handleChatListScroll(event) {
+    const { scrollTop, clientHeight, scrollHeight } = event.currentTarget;
+
+    if (scrollHeight - scrollTop - clientHeight < 120) {
+      loadMoreChats();
+    }
+  }
+
   async function loadMessages(chat, limit) {
-    if (!chat?.id) return;
+    if (!chat?.id || chat.isPending) return;
 
     setIsMessagesLoading(true);
     setError("");
@@ -414,6 +451,58 @@ export default function RecentChats({ sessionId }) {
     } finally {
       setIsMessagesLoading(false);
     }
+  }
+
+  async function handleSend(text) {
+    if (!selectedChat) return false;
+
+    setIsSending(true);
+
+    try {
+      await sendWhatsAppMessage({ sessionId, chatId: selectedChat.id, message: text });
+
+      if (selectedChat.isPending) {
+        // The chat now exists on WhatsApp; reload the list so it is no longer a placeholder.
+        const response = await getRecentChats({ sessionId, chatLimit: 30, messageLimit: 1 });
+        const nextChats = response.chats || [];
+        const realChat = nextChats.find((chat) => chat.id === selectedChat.id);
+        setChats(nextChats);
+        if (realChat) setSelectedChat({ ...realChat, name: selectedChat.name });
+      }
+
+      await loadMessages(selectedChat.isPending ? { ...selectedChat, isPending: false } : selectedChat, messageLimit);
+      return true;
+    } catch (sendError) {
+      onNotice?.({ type: "error", message: sendError.message || "Could not send the message." });
+      return false;
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  function openContactModal(chat) {
+    const looksLikeNumber = (value) => /^[+\d\s()-]+$/.test(String(value || ""));
+
+    setContactModal({
+      name: chat && !looksLikeNumber(chat.name) ? chat.name : "",
+      phone: chat?.phone || ""
+    });
+  }
+
+  function handleContactSaved(contact) {
+    setContactModal(null);
+    onNotice?.({
+      type: "success",
+      message: `${contact.name} saved${contact.syncedToPhone ? " and synced to your phone" : ""}.`
+    });
+
+    const existing = chats.find((chat) => chat.id === contact.id);
+    const chat = existing
+      ? { ...existing, name: contact.name, phone: contact.phone }
+      : { id: contact.id, name: contact.name, phone: contact.phone, isGroup: false, isPending: true, lastMessage: null };
+
+    setChats((current) => [chat, ...current.filter((item) => item.id !== chat.id)]);
+    selectChat(chat);
   }
 
   function selectChat(chat) {
@@ -444,7 +533,9 @@ export default function RecentChats({ sessionId }) {
     setSelectedChat(null);
     setMessages([]);
     setMessageLimit(INITIAL_MESSAGE_LIMIT);
-    loadChats({ keepSelection: false });
+    setChatLimit(CHAT_PAGE_SIZE);
+    setHasMoreChats(true);
+    loadChats({ keepSelection: false, limit: CHAT_PAGE_SIZE });
   }, [sessionId]);
 
   useEffect(() => {
@@ -457,18 +548,33 @@ export default function RecentChats({ sessionId }) {
     <section className="wa-chat-workspace" aria-labelledby="chat-browser-title">
       <aside className="wa-chat-sidebar">
         <div className="wa-chat-sidebar-head">
-          <div>
-            <p className="wa-eyebrow">Chats</p>
-            <h2 id="chat-browser-title">Recent</h2>
+          <h2 id="chat-browser-title">Chats</h2>
+          <div className="wa-sidebar-actions">
+            <button
+              type="button"
+              className="wa-icon-button"
+              onClick={() => loadChats()}
+              disabled={isChatsLoading}
+              title="Refresh chats"
+              aria-label="Refresh chats"
+            >
+              {isChatsLoading ? "…" : "⟳"}
+            </button>
+            <button
+              type="button"
+              className="wa-icon-button primary"
+              onClick={() => openContactModal(null)}
+              title="New contact"
+              aria-label="New contact"
+            >
+              +
+            </button>
           </div>
-          <Button type="button" variant="secondary" isLoading={isChatsLoading} onClick={() => loadChats()}>
-            Refresh
-          </Button>
         </div>
 
         {error && !selectedChat ? <p className="wa-error wa-sidebar-error">{error}</p> : null}
 
-        <div className="wa-chat-list-panel">
+        <div className="wa-chat-list-panel" onScroll={handleChatListScroll}>
           {chats.map((chat) => (
             <button
               className={`wa-chat-list-item ${selectedChat?.id === chat.id ? "active" : ""}`}
@@ -488,6 +594,8 @@ export default function RecentChats({ sessionId }) {
             </button>
           ))}
 
+          {isChatsLoading && chats.length > 0 ? <p className="wa-help wa-chat-list-more">Loading more chats...</p> : null}
+
           {!isChatsLoading && chats.length === 0 ? <p className="wa-help wa-empty-chats">No recent chats found.</p> : null}
         </div>
       </aside>
@@ -497,10 +605,22 @@ export default function RecentChats({ sessionId }) {
           {selectedChat ? (
             <>
               <ChatAvatar sessionId={sessionId} chat={selectedChat} />
-              <div>
+              <div className="wa-thread-title">
                 <h2>{selectedChat.name}{selectedChat.isBusiness ? <em className="wa-business-badge">Business</em> : null}</h2>
-                <p>{selectedChat.isGroup ? "Group" : selectedChat.isBusiness ? "Business account" : "Chat"} · {selectedChat.businessName && selectedChat.businessName !== selectedChat.name ? `${selectedChat.businessName} · ` : selectedChat.phoneTitle && selectedChat.phoneTitle !== selectedChat.name ? `${selectedChat.phoneTitle} · ` : ""}{selectedChat.id}</p>
+                <p>
+                  {selectedChat.isGroup
+                    ? "Group"
+                    : [selectedChat.businessName && selectedChat.businessName !== selectedChat.name ? selectedChat.businessName : null,
+                        selectedChat.phone || (selectedChat.phoneTitle !== selectedChat.name ? selectedChat.phoneTitle : null)]
+                        .filter(Boolean)
+                        .join(" · ") || (selectedChat.isBusiness ? "Business account" : "Chat")}
+                </p>
               </div>
+              {!selectedChat.isGroup ? (
+                <button type="button" className="wa-pill-button" onClick={() => openContactModal(selectedChat)}>
+                  Add contact
+                </button>
+              ) : null}
             </>
           ) : (
             <div>
@@ -544,7 +664,19 @@ export default function RecentChats({ sessionId }) {
             <div className="wa-thread-empty">No chat selected</div>
           )}
         </div>
+
+        <MessageComposer disabled={!selectedChat} isSending={isSending} onSend={handleSend} />
       </section>
+
+      {contactModal ? (
+        <AddContactModal
+          sessionId={sessionId}
+          initialName={contactModal.name}
+          initialPhone={contactModal.phone}
+          onClose={() => setContactModal(null)}
+          onSaved={handleContactSaved}
+        />
+      ) : null}
     </section>
   );
 }
