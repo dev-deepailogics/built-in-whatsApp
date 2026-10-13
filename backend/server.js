@@ -175,6 +175,7 @@ function attachWhatsAppListeners(session, client) {
   client.on("message_create", async (message) => {
     try {
       if (message.from === "status@broadcast" || message.to === "status@broadcast") return;
+      if (SYSTEM_MESSAGE_TYPES.includes(message.type)) return;
 
       const chatId = message.fromMe ? message.to : message.from;
       const payload = serializeMessage(message);
@@ -216,6 +217,18 @@ function attachWhatsAppListeners(session, client) {
       qr: null,
       message: reason || "WhatsApp disconnected. Reconnect or generate a new QR."
     });
+
+    // Release the Chromium process; /api/reconnect creates a fresh client.
+    client.destroy().catch(() => null);
+  });
+
+  // Push read-state changes (e.g. chat read on the phone) so badges stay in sync without polling.
+  client.on("unread_count", (chat) => {
+    const chatId = chat?.id?._serialized;
+
+    if (chatId) {
+      broadcastSessionEvent(session, "whatsapp-unread", { chatId, unreadCount: chat.unreadCount || 0 });
+    }
   });
 }
 
@@ -256,7 +269,7 @@ async function initializeSession(session, { resetSession = false } = {}) {
   return session.state;
 }
 
-function formatPhoneForWhatsApp(phone) {
+function normalizePhoneDigits(phone) {
   const normalized = String(phone || "").replace(/[^\d]/g, "");
 
   if (!normalized || normalized.length < 8 || normalized.length > 15) {
@@ -265,8 +278,12 @@ function formatPhoneForWhatsApp(phone) {
     throw error;
   }
 
-  return `${normalized}@c.us`;
+  return normalized;
 }
+
+const SEND_WINDOW_MS = 60 * 1000;
+const SEND_MAX_PER_WINDOW = Number(process.env.SEND_MAX_PER_MINUTE || 30);
+const sendTimestamps = new Map();
 
 function getMessageId(messageResult) {
   return messageResult?.id?._serialized || messageResult?._data?.id?._serialized || null;
@@ -302,23 +319,12 @@ function serializeMessage(message) {
   };
 }
 
-function serializeChat(chat, messages = []) {
-  return {
-    id: chat.id?._serialized || null,
-    name: chat.name || chat.id?.user || "Unknown chat",
-    isBusiness: false,
-    businessName: null,
-    isGroup: Boolean(chat.isGroup),
-    unreadCount: chat.unreadCount || 0,
-    timestamp: chat.timestamp || null,
-    lastMessage: chat.lastMessage ? serializeMessage(chat.lastMessage) : null,
-    messages
-  };
-}
+// Encryption/system notices (e.g. "security code changed") carry no content worth showing.
+const SYSTEM_MESSAGE_TYPES = ["e2e_notification", "notification", "notification_template", "gp2", "protocol", "broadcast_notification"];
 
 async function getRecentChatsFromBrowser(client, { chatLimit, messageLimit }) {
   return client.pupPage.evaluate(
-    ({ chatLimit: pageChatLimit, messageLimit: pageMessageLimit }) => {
+    ({ chatLimit: pageChatLimit, messageLimit: pageMessageLimit, systemTypes: pageSystemTypes }) => {
       const getSerializedId = (value) => {
         if (!value) return null;
         if (typeof value === "string") return value;
@@ -365,7 +371,7 @@ async function getRecentChatsFromBrowser(client, { chatLimit, messageLimit }) {
 
           const messageModels = chat.msgs?.getModelsArray?.() || [];
           const messages = messageModels
-            .filter((message) => !message.isNotification)
+            .filter((message) => !message.isNotification && !pageSystemTypes.includes(message.type))
             .sort((a, b) => (a.t || 0) - (b.t || 0))
             .slice(-pageMessageLimit)
             .map(serializeMessageModel)
@@ -404,21 +410,23 @@ async function getRecentChatsFromBrowser(client, { chatLimit, messageLimit }) {
         }
       };
 
+      // Order and trim the raw models first so only the requested page is serialized, not every chat.
       const chatCollection = window.require("WAWebCollections").Chat;
       return chatCollection
         .getModelsArray()
+        .sort((a, b) => (b.t || 0) - (a.t || 0))
+        .slice(0, pageChatLimit)
         .map(serializeChatModel)
         .filter(Boolean)
-        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-        .slice(0, pageChatLimit);
+        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     },
-    { chatLimit, messageLimit }
+    { chatLimit, messageLimit, systemTypes: SYSTEM_MESSAGE_TYPES }
   );
 }
 
 async function getChatMessages(session, { chatId, limit }) {
   return session.client.pupPage.evaluate(
-    async ({ requestedChatId, requestedLimit }) => {
+    async ({ requestedChatId, requestedLimit, requestedSystemTypes }) => {
       const getSerializedId = (value) => {
         if (!value) return null;
         if (typeof value === "string") return value;
@@ -465,7 +473,7 @@ async function getChatMessages(session, { chatId, limit }) {
         return { found: false, messages: [] };
       }
 
-      const msgFilter = (message) => !message.isNotification;
+      const msgFilter = (message) => !message.isNotification && !requestedSystemTypes.includes(message.type);
       let messages = (chat.msgs?.getModelsArray?.() || []).filter(msgFilter);
 
       while (messages.length < requestedLimit) {
@@ -528,7 +536,7 @@ async function getChatMessages(session, { chatId, limit }) {
 
       return { found: true, messages };
     },
-    { requestedChatId: chatId, requestedLimit: limit }
+    { requestedChatId: chatId, requestedLimit: limit, requestedSystemTypes: SYSTEM_MESSAGE_TYPES }
   );
 }
 
@@ -587,6 +595,7 @@ app.get(
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
 
     session.sseClients.add(res);
@@ -629,6 +638,20 @@ app.post(
     const { phone, message } = req.body || {};
     const text = String(message || "").trim();
 
+    // WhatsApp flags bursts of automated sends; keep each session to a human-plausible rate.
+    const nowMs = Date.now();
+    const recentSends = (sendTimestamps.get(session.sessionId) || []).filter((at) => nowMs - at < SEND_WINDOW_MS);
+
+    if (recentSends.length >= SEND_MAX_PER_WINDOW) {
+      return res.status(429).json({
+        success: false,
+        error: "Sending too fast. Please wait a moment before sending more messages."
+      });
+    }
+
+    recentSends.push(nowMs);
+    sendTimestamps.set(session.sessionId, recentSends);
+
     if (!text) {
       return res.status(400).json({
         success: false,
@@ -656,8 +679,7 @@ app.post(
 
       recipientId = existingChatId;
     } else {
-      const formattedId = formatPhoneForWhatsApp(phone);
-      const registeredNumber = await session.client.getNumberId(formattedId).catch(() => null);
+      const registeredNumber = await session.client.getNumberId(normalizePhoneDigits(phone)).catch(() => null);
 
       if (!registeredNumber?._serialized) {
         return res.status(400).json({
@@ -776,6 +798,34 @@ app.get(
     });
   })
 );
+
+// Small byte-bounded LRU so reopening a chat does not re-download and re-decrypt the same media.
+const MEDIA_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const mediaCache = new Map();
+let mediaCacheBytes = 0;
+
+function mediaCacheGet(key) {
+  const entry = mediaCache.get(key);
+  if (!entry) return null;
+
+  mediaCache.delete(key);
+  mediaCache.set(key, entry);
+  return entry.payload;
+}
+
+function mediaCacheSet(key, payload) {
+  const size = payload.dataUrl.length;
+  if (size > MEDIA_CACHE_MAX_BYTES / 2) return;
+
+  mediaCache.set(key, { payload, size });
+  mediaCacheBytes += size;
+
+  for (const [oldKey, oldEntry] of mediaCache) {
+    if (mediaCacheBytes <= MEDIA_CACHE_MAX_BYTES) break;
+    mediaCache.delete(oldKey);
+    mediaCacheBytes -= oldEntry.size;
+  }
+}
 
 async function downloadMessageMedia(client, messageId) {
   try {
@@ -969,7 +1019,9 @@ app.post(
 );
 
 const PROFILE_PHOTO_TTL_MS = 60 * 60 * 1000;
+const PROFILE_PHOTO_CACHE_MAX_ENTRIES = 500;
 const profilePhotoCache = new Map();
+const profilePhotoInFlight = new Map();
 
 app.get(
   "/api/chats/photo",
@@ -989,39 +1041,21 @@ app.get(
     let entry = profilePhotoCache.get(cacheKey);
 
     if (!entry || Date.now() - entry.fetchedAt > PROFILE_PHOTO_TTL_MS) {
-      entry = { fetchedAt: Date.now(), image: null };
-
-      try {
-        // whatsapp-web.js's getProfilePicUrl() fails on this WhatsApp Web build; call the bridge directly.
-        const photoUrl = await session.client.pupPage.evaluate(async (id) => {
-          const collections = window.require("WAWebCollections");
-          const chat = collections.Chat.get(id) || collections.Contact.get(id);
-
-          if (!chat) return null;
-
-          try {
-            const pic = await window.require("WAWebContactProfilePicThumbBridge").requestProfilePicFromServer(chat);
-            return pic?.eurl || null;
-          } catch (error) {
-            return null;
-          }
-        }, chatId);
-
-        if (photoUrl) {
-          const photoResponse = await fetch(photoUrl);
-
-          if (photoResponse.ok) {
-            entry.image = {
-              contentType: photoResponse.headers.get("content-type") || "image/jpeg",
-              buffer: Buffer.from(await photoResponse.arrayBuffer())
-            };
-          }
-        }
-      } catch (error) {
-        console.error(`Profile photo lookup failed for ${chatId}:`, error.message);
+      // The chat list, thread header and group senders all ask for the same photo at once; share one lookup.
+      if (!profilePhotoInFlight.has(cacheKey)) {
+        profilePhotoInFlight.set(
+          cacheKey,
+          fetchProfilePhoto(session, chatId).finally(() => profilePhotoInFlight.delete(cacheKey))
+        );
       }
 
+      entry = await profilePhotoInFlight.get(cacheKey);
+      profilePhotoCache.delete(cacheKey);
       profilePhotoCache.set(cacheKey, entry);
+
+      if (profilePhotoCache.size > PROFILE_PHOTO_CACHE_MAX_ENTRIES) {
+        profilePhotoCache.delete(profilePhotoCache.keys().next().value);
+      }
     }
 
     if (!entry.image) {
@@ -1034,13 +1068,49 @@ app.get(
   })
 );
 
+async function fetchProfilePhoto(session, chatId) {
+  const entry = { fetchedAt: Date.now(), image: null };
+
+  try {
+    // whatsapp-web.js's getProfilePicUrl() fails on this WhatsApp Web build; call the bridge directly.
+    const photoUrl = await session.client.pupPage.evaluate(async (id) => {
+      const collections = window.require("WAWebCollections");
+      const chat = collections.Chat.get(id) || collections.Contact.get(id);
+
+      if (!chat) return null;
+
+      try {
+        const pic = await window.require("WAWebContactProfilePicThumbBridge").requestProfilePicFromServer(chat);
+        return pic?.eurl || null;
+      } catch (error) {
+        return null;
+      }
+    }, chatId);
+
+    if (photoUrl) {
+      const photoResponse = await fetch(photoUrl);
+
+      if (photoResponse.ok) {
+        entry.image = {
+          contentType: photoResponse.headers.get("content-type") || "image/jpeg",
+          buffer: Buffer.from(await photoResponse.arrayBuffer())
+        };
+      }
+    }
+  } catch (error) {
+    console.error(`Profile photo lookup failed for ${chatId}:`, error.message);
+  }
+
+  return entry;
+}
+
 const HISTORY_SYNC_COOLDOWN_MS = 15 * 1000;
 const HISTORY_SYNC_POLL_INTERVAL_MS = 1500;
 const HISTORY_SYNC_MAX_WAIT_MS = 25 * 1000;
 const historySyncAttempts = new Map();
 
 async function countLocalChatMessages(client, chatId) {
-  return client.pupPage.evaluate((requestedChatId) => {
+  return client.pupPage.evaluate((requestedChatId, systemTypes) => {
     const chat = window
       .require("WAWebCollections")
       .Chat.getModelsArray()
@@ -1049,8 +1119,8 @@ async function countLocalChatMessages(client, chatId) {
         return id === requestedChatId;
       });
 
-    return (chat?.msgs?.getModelsArray?.() || []).filter((message) => !message.isNotification).length;
-  }, chatId);
+    return (chat?.msgs?.getModelsArray?.() || []).filter((message) => !message.isNotification && !systemTypes.includes(message.type)).length;
+  }, chatId, SYSTEM_MESSAGE_TYPES);
 }
 
 app.get(
@@ -1074,20 +1144,12 @@ app.get(
       });
     }
 
-    const message = await session.client.getMessageById(messageId);
+    const cacheKey = `${session.sessionId}:${messageId}`;
+    const cached = mediaCacheGet(cacheKey);
 
-    if (!message) {
-      return res.status(404).json({
-        success: false,
-        error: "Message not found."
-      });
-    }
-
-    if (!message.hasMedia) {
-      return res.status(400).json({
-        success: false,
-        error: "Message does not contain downloadable media."
-      });
+    if (cached) {
+      res.set("Cache-Control", "private, max-age=3600");
+      return res.status(200).json(cached);
     }
 
     let media = null;
@@ -1112,14 +1174,18 @@ app.get(
       });
     }
 
-    res.status(200).json({
+    const payload = {
       success: true,
       messageId,
       mimetype: media.mimetype,
       filename: media.filename || null,
       filesize: media.filesize || null,
       dataUrl: `data:${String(media.mimetype).replace(/;\s+/g, ";")};base64,${media.data}`
-    });
+    };
+
+    mediaCacheSet(cacheKey, payload);
+    res.set("Cache-Control", "private, max-age=3600");
+    res.status(200).json(payload);
   })
 );
 
@@ -1164,6 +1230,11 @@ async function shutdown(signal) {
 
   process.exit(0);
 }
+
+// Puppeteer rejects with "Execution context was destroyed" during page navigations; log instead of crashing every session.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection:", reason?.message || reason);
+});
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));

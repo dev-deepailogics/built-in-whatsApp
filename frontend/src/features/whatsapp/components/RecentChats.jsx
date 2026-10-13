@@ -407,6 +407,7 @@ export default function RecentChats({ sessionId, onNotice }) {
   const [contactModal, setContactModal] = useState(null);
   const threadRef = useRef(null);
   const isLoadingOlderRef = useRef(false);
+  const stickToBottomRef = useRef(true);
   const liveRef = useRef({});
   const incomingHandlerRef = useRef(() => {});
   const handledMessageIdsRef = useRef(new Set());
@@ -572,7 +573,12 @@ export default function RecentChats({ sessionId, onNotice }) {
     selectChat(chat);
   }
 
+  function scrollThreadToBottom() {
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+  }
+
   function selectChat(chat) {
+    stickToBottomRef.current = true;
     setSelectedChat(chat);
     setMessages([]);
     setMessageLimit(INITIAL_MESSAGE_LIMIT);
@@ -591,6 +597,9 @@ export default function RecentChats({ sessionId, onNotice }) {
   }
 
   function handleThreadScroll(event) {
+    const { scrollTop, clientHeight, scrollHeight } = event.currentTarget;
+    stickToBottomRef.current = scrollHeight - scrollTop - clientHeight < 80;
+
     if (event.currentTarget.scrollTop < 80 && selectedChat && !isMessagesLoading) {
       loadOlderMessages();
     }
@@ -686,6 +695,26 @@ export default function RecentChats({ sessionId, onNotice }) {
       }
     });
 
+    // Read-state changes from WhatsApp itself (e.g. the chat was read on the phone).
+    source.addEventListener("whatsapp-unread", (event) => {
+      try {
+        const { chatId, unreadCount } = JSON.parse(event.data);
+        const isViewing = liveRef.current.selectedChat?.id === chatId && !document.hidden;
+
+        setChats((current) =>
+          current.map((item) =>
+            item.id === chatId ? { ...item, unreadCount: isViewing ? 0 : unreadCount } : item
+          )
+        );
+
+        if (isViewing && unreadCount > 0) {
+          markChatSeen({ sessionId, chatId }).catch(() => null);
+        }
+      } catch (parseError) {
+        // Ignore malformed events.
+      }
+    });
+
     source.onerror = () => {
       hasLostConnection = true;
     };
@@ -765,10 +794,23 @@ export default function RecentChats({ sessionId, onNotice }) {
   }, [sessionId]);
 
   useEffect(() => {
+    const thread = threadRef.current;
+    if (!thread) return undefined;
+
+    const observer = new MutationObserver(() => {
+      if (stickToBottomRef.current) scrollThreadToBottom();
+    });
+
+    observer.observe(thread, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     if (selectedChat) {
+      stickToBottomRef.current = true;
       loadMessages(selectedChat, INITIAL_MESSAGE_LIMIT);
 
-      if (!selectedChat.isPending) {
+      if (!selectedChat.isPending && selectedChat.unreadCount > 0) {
         // Tell WhatsApp the chat was read so the unread count survives a refresh.
         markChatSeen({ sessionId, chatId: selectedChat.id }).catch(() => null);
         setChats((current) =>
@@ -866,7 +908,13 @@ export default function RecentChats({ sessionId, onNotice }) {
 
         {error && selectedChat ? <p className="wa-error wa-thread-error">{error}</p> : null}
 
-        <div className="wa-thread-scroll" ref={threadRef} onScroll={handleThreadScroll}>
+        <div
+          className="wa-thread-scroll"
+          ref={threadRef}
+          onScroll={handleThreadScroll}
+          onLoadCapture={() => stickToBottomRef.current && scrollThreadToBottom()}
+          onLoadedMetadataCapture={() => stickToBottomRef.current && scrollThreadToBottom()}
+        >
           {selectedChat ? (
             <>
               {isMessagesLoading && messages.length > 0 ? (
