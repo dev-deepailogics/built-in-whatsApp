@@ -3,10 +3,12 @@ import Button from "../../../shared/ui/Button.jsx";
 import AddContactModal from "./AddContactModal.jsx";
 import MessageComposer from "./MessageComposer.jsx";
 import {
+  createWhatsAppEventSource,
   getChatMessages,
   getChatPhotoUrl,
   getMessageMedia,
   getRecentChats,
+  markChatSeen,
   sendWhatsAppMessage,
   syncChatHistory
 } from "../api/whatsappApi.js";
@@ -14,6 +16,37 @@ import {
 const INITIAL_MESSAGE_LIMIT = 20;
 const MESSAGE_PAGE_SIZE = 20;
 const CHAT_PAGE_SIZE = 30;
+const CHAT_POLL_INTERVAL_MS = 4000;
+
+let audioContext = null;
+
+function playNotificationSound() {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    audioContext = audioContext || new AudioContextClass();
+    if (audioContext.state === "suspended") audioContext.resume();
+
+    const start = audioContext.currentTime;
+    [880, 1175].forEach((frequency, index) => {
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const at = start + index * 0.12;
+
+      oscillator.type = "sine";
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(0.25, at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.18);
+      oscillator.connect(gain).connect(audioContext.destination);
+      oscillator.start(at);
+      oscillator.stop(at + 0.2);
+    });
+  } catch (error) {
+    // Audio can be blocked until the page has had a user gesture.
+  }
+}
 
 function formatChatTime(timestamp) {
   if (!timestamp) return "";
@@ -374,6 +407,9 @@ export default function RecentChats({ sessionId, onNotice }) {
   const [contactModal, setContactModal] = useState(null);
   const threadRef = useRef(null);
   const isLoadingOlderRef = useRef(false);
+  const liveRef = useRef({});
+  const incomingHandlerRef = useRef(() => {});
+  const handledMessageIdsRef = useRef(new Set());
 
   const selectedChatTitle = selectedChat?.name || "Select a chat";
   const orderedMessages = useMemo(
@@ -388,6 +424,7 @@ export default function RecentChats({ sessionId, onNotice }) {
     try {
       const response = await getRecentChats({ sessionId, chatLimit: limit, messageLimit: 1 });
       const nextChats = response.chats || [];
+      nextChats.forEach((chat) => chat.lastMessage?.id && handledMessageIdsRef.current.add(chat.lastMessage.id));
 
       // Keep placeholder chats (just-added contacts with no history yet) at the top until WhatsApp lists them.
       setChats((current) => {
@@ -539,6 +576,7 @@ export default function RecentChats({ sessionId, onNotice }) {
     setSelectedChat(chat);
     setMessages([]);
     setMessageLimit(INITIAL_MESSAGE_LIMIT);
+    setChats((current) => current.map((item) => (item.id === chat.id && item.unreadCount ? { ...item, unreadCount: 0 } : item)));
   }
 
   function loadOlderMessages() {
@@ -558,6 +596,164 @@ export default function RecentChats({ sessionId, onNotice }) {
     }
   }
 
+  liveRef.current = { chats, selectedChat, chatLimit, messageLimit, loadChats, loadMessages };
+
+  function handleIncomingMessage({ chatId, message }) {
+    if (!chatId || !message?.id) return;
+    if (handledMessageIdsRef.current.has(message.id)) return;
+    handledMessageIdsRef.current.add(message.id);
+
+    const { chats: currentChats, selectedChat: currentSelected, chatLimit: currentChatLimit } = liveRef.current;
+    const isSelected = currentSelected?.id === chatId;
+    const isIncoming = !message.fromMe;
+    const known = currentChats.some((chat) => chat.id === chatId);
+
+    if (isSelected) {
+      const thread = threadRef.current;
+      const isNearBottom = !thread || thread.scrollHeight - thread.scrollTop - thread.clientHeight < 150;
+
+      setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
+
+      if (isNearBottom || message.fromMe) {
+        requestAnimationFrame(() => {
+          if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+        });
+      }
+    }
+
+    if (isSelected && isIncoming && !document.hidden) {
+      markChatSeen({ sessionId, chatId }).catch(() => null);
+    }
+
+    if (known) {
+      setChats((current) => {
+        const existing = current.find((chat) => chat.id === chatId);
+        if (!existing) return current;
+
+        const updated = {
+          ...existing,
+          isPending: false,
+          lastMessage: message,
+          timestamp: message.timestamp || existing.timestamp,
+          unreadCount: isIncoming && !isSelected ? (existing.unreadCount || 0) + 1 : isSelected ? 0 : existing.unreadCount
+        };
+
+        return [updated, ...current.filter((chat) => chat.id !== chatId)];
+      });
+    } else {
+      // A brand-new conversation: pull the list so it appears with its name and avatar.
+      liveRef.current.loadChats({ limit: currentChatLimit });
+    }
+
+    if (isIncoming && (!isSelected || document.hidden)) {
+      playNotificationSound();
+    }
+
+    if (isIncoming && (!isSelected || document.hidden) && typeof Notification !== "undefined" && Notification.permission === "granted") {
+      const chat = currentChats.find((item) => item.id === chatId);
+      const title = chat?.name || message.sender?.name || message.sender?.number || "New WhatsApp message";
+      const body = message.sender?.name && chat?.isGroup ? `${message.sender.name}: ${getMessagePreview(message)}` : getMessagePreview(message);
+
+      try {
+        const notification = new Notification(title, { body, tag: chatId });
+        notification.onclick = () => {
+          window.focus();
+          const target = liveRef.current.chats.find((item) => item.id === chatId);
+          if (target) selectChat(target);
+          notification.close();
+        };
+      } catch (notificationError) {
+        // Notifications can be unavailable (e.g. insecure context); the unread badge still updates.
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => null);
+    }
+  }, []);
+
+  useEffect(() => {
+    const source = createWhatsAppEventSource(sessionId);
+    let hasLostConnection = false;
+
+    source.addEventListener("whatsapp-message", (event) => {
+      try {
+        incomingHandlerRef.current(JSON.parse(event.data));
+      } catch (parseError) {
+        // Ignore malformed events.
+      }
+    });
+
+    source.onerror = () => {
+      hasLostConnection = true;
+    };
+
+    // Messages arriving while the stream was down are not replayed, so resync after reconnecting.
+    source.onopen = () => {
+      if (!hasLostConnection) return;
+      hasLostConnection = false;
+
+      const { chatLimit: limit, selectedChat: current, messageLimit: msgLimit, loadChats: reloadChats, loadMessages: reloadMessages } =
+        liveRef.current;
+      reloadChats({ limit });
+      if (current) reloadMessages(current, msgLimit);
+    };
+
+    return () => source.close();
+  }, [sessionId]);
+
+  incomingHandlerRef.current = handleIncomingMessage;
+
+  // Fallback for missed live events: poll the chat list and feed unseen last messages through the same handler.
+  useEffect(() => {
+    let isActive = true;
+    let isPolling = false;
+
+    async function poll() {
+      if (isPolling) return;
+      isPolling = true;
+
+      try {
+        const response = await getRecentChats({ sessionId, chatLimit: CHAT_PAGE_SIZE, messageLimit: 1 });
+
+        if (!isActive || liveRef.current.chats?.length === 0) return;
+
+        const fresh = (response.chats || [])
+          .filter((chat) => chat.lastMessage?.id && !handledMessageIdsRef.current.has(chat.lastMessage.id))
+          .sort((a, b) => (a.lastMessage.timestamp || 0) - (b.lastMessage.timestamp || 0));
+
+        fresh.forEach((chat) => incomingHandlerRef.current({ chatId: chat.id, message: chat.lastMessage }));
+      } catch (pollError) {
+        // Transient; the next tick retries.
+      } finally {
+        isPolling = false;
+      }
+    }
+
+    const timer = setInterval(poll, CHAT_POLL_INTERVAL_MS);
+
+    return () => {
+      isActive = false;
+      clearInterval(timer);
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    function handleVisibility() {
+      const current = liveRef.current.selectedChat;
+
+      if (!document.hidden && current && !current.isPending) {
+        markChatSeen({ sessionId, chatId: current.id }).catch(() => null);
+        setChats((list) => list.map((item) => (item.id === current.id && item.unreadCount ? { ...item, unreadCount: 0 } : item)));
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, [sessionId]);
+
   useEffect(() => {
     setChats([]);
     setSelectedChat(null);
@@ -571,6 +767,14 @@ export default function RecentChats({ sessionId, onNotice }) {
   useEffect(() => {
     if (selectedChat) {
       loadMessages(selectedChat, INITIAL_MESSAGE_LIMIT);
+
+      if (!selectedChat.isPending) {
+        // Tell WhatsApp the chat was read so the unread count survives a refresh.
+        markChatSeen({ sessionId, chatId: selectedChat.id }).catch(() => null);
+        setChats((current) =>
+          current.map((item) => (item.id === selectedChat.id && item.unreadCount ? { ...item, unreadCount: 0 } : item))
+        );
+      }
     }
   }, [selectedChat?.id]);
 

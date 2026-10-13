@@ -171,6 +171,37 @@ function attachWhatsAppListeners(session, client) {
     });
   });
 
+  // message_create fires for incoming messages and for ones sent from this account (e.g. from the phone).
+  client.on("message_create", async (message) => {
+    try {
+      if (message.from === "status@broadcast" || message.to === "status@broadcast") return;
+
+      const chatId = message.fromMe ? message.to : message.from;
+      const payload = serializeMessage(message);
+
+      if (!message.fromMe) {
+        try {
+          const contact = await message.getContact();
+          const isBusiness = Boolean(contact?.isBusiness || contact?.isEnterprise);
+
+          payload.sender = {
+            id: message.author || message.from,
+            name: contact?.name || contact?.shortName || contact?.pushname || contact?.verifiedName || null,
+            number: contact?.number ? `+${contact.number}` : null,
+            isBusiness
+          };
+        } catch (error) {
+          // The UI falls back to a generic sender label.
+        }
+      }
+
+      console.log(`[${session.sessionId}] message ${payload.id} in ${chatId} -> ${session.sseClients.size} listener(s)`);
+      broadcastSessionEvent(session, "whatsapp-message", { chatId, message: payload });
+    } catch (error) {
+      console.error(`Failed to broadcast message for ${session.sessionId}:`, error.message);
+    }
+  });
+
   client.on("auth_failure", (message) => {
     updateSessionState(session, {
       status: "auth_failure",
@@ -683,6 +714,25 @@ app.get(
       messageLimit,
       chats: serializedChats
     });
+  })
+);
+
+app.post(
+  "/api/chats/seen",
+  asyncHandler(async (req, res) => {
+    const session = getOrCreateSession(getSessionId(req));
+    const chatId = String(req.body?.chatId || "").trim();
+
+    if (session.state.status !== "connected" || !session.client) {
+      return res.status(409).json({ success: false, error: "WhatsApp is not connected." });
+    }
+
+    if (!/^[\w.-]+@(c\.us|g\.us|lid)$/.test(chatId)) {
+      return res.status(400).json({ success: false, error: "chatId is not a valid WhatsApp chat id." });
+    }
+
+    await session.client.sendSeen(chatId);
+    res.status(200).json({ success: true });
   })
 );
 

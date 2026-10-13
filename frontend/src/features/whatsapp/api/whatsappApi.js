@@ -95,3 +95,10 @@ export function logoutWhatsApp(sessionId) {
 export function createWhatsAppEventSource(sessionId) {
   return new EventSource(`${API_BASE_URL}/api/whatsapp-events?${sessionQuery(sessionId)}`);
 }
+
+export function markChatSeen({ sessionId, chatId }) {
+  return apiRequest(`/api/chats/seen?${sessionQuery(sessionId)}`, {
+    method: "POST",
+    body: JSON.stringify({ sessionId, chatId })
+  });
+}
